@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -67,6 +69,18 @@ func (b *SelectBuilder) QueryContext(ctx context.Context) (*sql.Rows, error) {
 		return nil, ErrRunnerNotSet
 	}
 	return QueryWithContext(ctx, b.runWith, b)
+}
+
+var (
+	countQurey = []Sqlizer{newPart("COUNT(1)")}
+)
+
+func (b *SelectBuilder) Count() (count int, err error) {
+	cols := b.columns
+	b.columns = countQurey
+	err = b.QueryRowContext(context.Background()).Scan(&count)
+	b.columns = cols
+	return
 }
 
 // QueryRow builds and QueryRows the query with the Runner set by RunWith.
@@ -296,6 +310,13 @@ func (b *SelectBuilder) Where(pred interface{}, args ...interface{}) *SelectBuil
 	return b
 }
 
+func (b *SelectBuilder) WhereOptional(optional bool, pred interface{}, args ...interface{}) *SelectBuilder {
+	if optional {
+		b.whereParts = append(b.whereParts, newWherePart(pred, args...))
+	}
+	return b
+}
+
 // GroupBy adds GROUP BY expressions to the query.
 func (b *SelectBuilder) GroupBy(groupBys ...string) *SelectBuilder {
 	b.groupBys = append(b.groupBys, groupBys...)
@@ -318,15 +339,19 @@ func (b *SelectBuilder) OrderBy(orderBys ...string) *SelectBuilder {
 
 // Limit sets a LIMIT clause on the query.
 func (b *SelectBuilder) Limit(limit uint64) *SelectBuilder {
-	b.limit = limit
-	b.limitValid = true
+	if limit > 0 {
+		b.limit = limit
+		b.limitValid = true
+	}
 	return b
 }
 
 // Offset sets a OFFSET clause on the query.
 func (b *SelectBuilder) Offset(offset uint64) *SelectBuilder {
-	b.offset = offset
-	b.offsetValid = true
+	if offset > 0 {
+		b.offset = offset
+		b.offsetValid = true
+	}
 	return b
 }
 
@@ -335,4 +360,64 @@ func (b *SelectBuilder) Suffix(sql string, args ...interface{}) *SelectBuilder {
 	b.suffixes = append(b.suffixes, Expr(sql, args...))
 
 	return b
+}
+
+func (b *SelectBuilder) QueryAndMapping(f func(rowMap map[string]interface{})) error {
+	rs, err := b.Query()
+	return rowsMapping(rs, err, f)
+}
+
+func (b *SelectBuilder) QueryAsMapList() (lst []map[string]interface{}, err error) {
+	err = b.QueryAndMapping(func(m map[string]interface{}) {
+		lst = append(lst, m)
+	})
+	return
+}
+
+func (b *SelectBuilder) QueryRowAsMap() (out map[string]interface{}, err error) {
+	err = b.QueryAndMapping(func(m map[string]interface{}) {
+		out = m
+	})
+	return
+}
+
+func rowsMapping(rs *sql.Rows, err error, mapping func(m map[string]interface{})) error {
+	if err != nil {
+		return err
+	}
+	defer rs.Close()
+	columns, err := rs.Columns()
+	if err != nil {
+		return err
+	}
+	columnTypes, err := rs.ColumnTypes()
+	if err != nil {
+		return err
+	}
+	points := make([]interface{}, len(columns))
+	for err == nil && rs.Next() {
+		for i, t := range columnTypes {
+			points[i] = reflect.New(t.ScanType()).Interface()
+		}
+		err = rs.Scan(points...)
+		if err != nil {
+			return err
+		}
+		retMap := map[string]interface{}{}
+		for i, t := range columns {
+			v := reflect.ValueOf(points[i]).Elem().Interface()
+			switch rv := v.(type) {
+			case sql.RawBytes:
+				retMap[t] = string(rv)
+			case driver.Valuer:
+				if v, _ := rv.Value(); v != nil {
+					retMap[t] = v
+				}
+			default:
+				retMap[t] = rv
+			}
+		}
+		mapping(retMap)
+	}
+	return rs.Err()
 }

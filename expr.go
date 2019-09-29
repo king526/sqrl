@@ -101,10 +101,10 @@ type Eq map[string]interface{}
 
 func (eq Eq) toSql(useNotOpr bool) (sql string, args []interface{}, err error) {
 	var (
-		exprs      []string
-		equalOpr   = "="
-		inOpr      = "IN"
-		nullOpr    = "IS"
+		exprs       []string
+		equalOpr    = "="
+		inOpr       = "IN"
+		nullOpr     = "IS"
 		inEmptyExpr = "(1=0)" // Portable FALSE
 	)
 
@@ -301,4 +301,60 @@ func hasSqlizer(args []interface{}) bool {
 		}
 	}
 	return false
+}
+
+// Like is syntactic sugar for use with LIKE conditions.
+// Ex:
+//     .Where(Like{"name": "%irrel"})
+type Like map[string]interface{}
+
+func (lk Like) toSql(opposite bool) (sql string, args []interface{}, err error) {
+	var (
+		exprs []string
+		opr   = "LIKE"
+	)
+
+	if opposite {
+		opr = "NOT LIKE"
+	}
+
+	for key, val := range lk {
+		expr := ""
+
+		switch v := val.(type) {
+		case driver.Valuer:
+			if val, err = v.Value(); err != nil {
+				return
+			}
+		}
+
+		if val == nil {
+			err = fmt.Errorf("cannot use null with like operators")
+			return
+		} else {
+			if isListType(val) {
+				err = fmt.Errorf("cannot use array or slice with like operators")
+				return
+			} else {
+				expr = fmt.Sprintf("%s %s ?", key, opr)
+				args = append(args, val)
+			}
+		}
+		exprs = append(exprs, expr)
+	}
+	sql = strings.Join(exprs, " AND ")
+	return
+}
+
+func (lk Like) ToSql() (sql string, args []interface{}, err error) {
+	return lk.toSql(false)
+}
+
+// NotLike is syntactic sugar for use with LIKE conditions.
+// Ex:
+//     .Where(NotLike{"name": "%irrel"})
+type NotLike Like
+
+func (nlk NotLike) ToSql() (sql string, args []interface{}, err error) {
+	return Like(nlk).toSql(true)
 }

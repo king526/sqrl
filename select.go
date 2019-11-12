@@ -75,11 +75,23 @@ var (
 	countQurey = []Sqlizer{newPart("COUNT(1)")}
 )
 
+// Count it is available for simple use,be careful
 func (b *SelectBuilder) Count() (count int, err error) {
+	orderBy := b.orderBys
 	cols := b.columns
+	offset := b.offsetValid
+	limit := b.limitValid
+	defer func() {
+		b.columns = cols
+		b.orderBys = orderBy
+		b.offsetValid = offset
+		b.limitValid = limit
+	}()
 	b.columns = countQurey
-	err = b.QueryRowContext(context.Background()).Scan(&count)
-	b.columns = cols
+	b.orderBys = nil
+	b.limitValid = false
+	b.offsetValid = false
+	err = b.QueryRow().Scan(&count)
 	return
 }
 
